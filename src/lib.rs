@@ -40,7 +40,7 @@ pub struct Receipt {
 #[derive(Debug, Error)]
 pub enum SentinelXError {
     #[error("INADMISSIBLE: {0}")]
-    Inadmissible(Receipt),
+    Inadmissible(String),
     #[error("HTTP error: {0}")]
     Http(String),
     #[error("Serialization error: {0}")]
@@ -50,12 +50,29 @@ pub enum SentinelXError {
 impl SentinelXError {
     /// Returns the receipt if this is an AdmissibilityError.
     pub fn receipt(&self) -> Option<&Receipt> {
-        match self {
-            SentinelXError::Inadmissible(r) => Some(r),
-            _ => None,
-        }
+        None // receipt stored separately via inadmissible_receipt()
     }
 }
+
+/// Wrapper for INADMISSIBLE results — contains the full receipt.
+#[derive(Debug)]
+pub struct AdmissibilityError {
+    pub receipt: Receipt,
+}
+
+impl AdmissibilityError {
+    pub fn receipt(&self) -> &Receipt {
+        &self.receipt
+    }
+}
+
+impl std::fmt::Display for AdmissibilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "INADMISSIBLE: {}", self.receipt.summary)
+    }
+}
+
+impl std::error::Error for AdmissibilityError {}
 
 #[derive(Serialize)]
 struct EnforceRequest<'a> {
@@ -87,12 +104,12 @@ impl SentinelX {
     }
 
     /// Evaluate action admissibility at the commit boundary.
-    /// Returns Receipt on ADMISSIBLE. Returns Err(SentinelXError::Inadmissible) on INADMISSIBLE.
+    /// Returns Receipt on ADMISSIBLE. Returns Err with AdmissibilityError on INADMISSIBLE.
     pub fn enforce(
         &self,
         action: &str,
         context: &HashMap<String, serde_json::Value>,
-    ) -> Result<Receipt, SentinelXError> {
+    ) -> Result<Receipt, Box<dyn std::error::Error>> {
         let url = format!("{}/v2/enforce", self.base_url);
         let body = EnforceRequest { action, context };
 
@@ -100,17 +117,19 @@ impl SentinelX {
             .set("Content-Type", "application/json")
             .set("X-API-Key", &self.api_key)
             .set("User-Agent", &format!("sentinelx-rs/{}", VERSION))
-            .send_json(serde_json::to_value(&body)?)
-            .map_err(|e| match e {
-                ureq::Error::Status(_, resp) => {
-                    let receipt: Receipt = resp.into_json().unwrap();
-                    SentinelXError::Inadmissible(receipt)
-                }
-                e => SentinelXError::Http(e.to_string()),
-            })?;
+            .send_json(serde_json::to_value(&body)?);
 
-        let receipt: Receipt = resp.into_json().map_err(|e| SentinelXError::Http(e.to_string()))?;
-        Ok(receipt)
+        match resp {
+            Ok(r) => {
+                let receipt: Receipt = r.into_json()?;
+                Ok(receipt)
+            }
+            Err(ureq::Error::Status(_, r)) => {
+                let receipt: Receipt = r.into_json()?;
+                Err(Box::new(AdmissibilityError { receipt }))
+            }
+            Err(e) => Err(Box::new(SentinelXError::Http(e.to_string()))),
+        }
     }
 
     /// Always returns the receipt. Never errors on INADMISSIBLE.
@@ -118,11 +137,16 @@ impl SentinelX {
         &self,
         action: &str,
         context: &HashMap<String, serde_json::Value>,
-    ) -> Result<Receipt, SentinelXError> {
+    ) -> Result<Receipt, Box<dyn std::error::Error>> {
         match self.enforce(action, context) {
             Ok(r) => Ok(r),
-            Err(SentinelXError::Inadmissible(r)) => Ok(r),
-            Err(e) => Err(e),
+            Err(e) => {
+                if let Some(ae) = e.downcast_ref::<AdmissibilityError>() {
+                    Ok(ae.receipt.clone())
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 }
