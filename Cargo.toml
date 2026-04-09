@@ -1,0 +1,16 @@
+[package]
+name = "sentinelx"
+version = "0.1.0"
+edition = "2021"
+description = "Pre-execution enforcement at the commit boundary"
+license = "Apache-2.0"
+repository = "https://github.com/xinfra-ai/sentinelx-rs"
+homepage = "https://sentinelx.ai"
+keywords = ["enforcement", "ai-safety", "agents", "scada"]
+categories = ["api-bindings", "web-programming"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+thiserror = "1"
